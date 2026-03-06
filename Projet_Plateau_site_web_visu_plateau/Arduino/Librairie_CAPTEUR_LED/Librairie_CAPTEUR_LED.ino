@@ -137,7 +137,7 @@ void loop() {
           //Serial.print("| B ");
           setuLED((j+(k*8)),strip.Color(255, 255, 255));
           etat = 1;
-          plateau[j][k].reset(CAVALIER, NOIR, j, k);
+          plateau[j][k].reset(FOU, NOIR, j, k);
           calculerDeplacements(plateau[j][k]);
         }
         else if(presence_pion_noir((j+(k*8)))){
@@ -217,7 +217,7 @@ void calculerDeplacements(Piece &p) {
 
 
   int cassePossible = 0;
-  int X[40];
+  int X[40]= {0,0,0,0,0,0,0,0,};
   int Y[40];
   // --- PION ---
  // --- PION ---
@@ -231,7 +231,7 @@ void calculerDeplacements(Piece &p) {
         Y[cassePossible] = y + dirY;
         cassePossible++;
 
-        if(nbrDeplacment == 0 && plateau[x][y + dirY].getType() == AUCUN)
+        if(nbrDeplacment == 0 && plateau[x][y + 2*dirY].getType() == AUCUN)
         {
           X[cassePossible] = x;
           Y[cassePossible] = y + 2*dirY;
@@ -254,69 +254,38 @@ void calculerDeplacements(Piece &p) {
     
   }
 
-  if (t == CAVALIER) {
-    for (int i = 1; i<7; i++ )//a modifier si en case 00 nous avons pas 7 valeur
-    {
-      if(y + i >= 0 && y + i <= 7 && x + i >= 0 && x + i <= 7 && (plateau[x + i][y + i].getType() == AUCUN || (plateau[x + i][y + i].getType() != AUCUN && plateau[x + i][y + i].getCouleur() != maCouleur)))//++
-      {
-        X[cassePossible] = x + i;
-        Y[cassePossible] = y + i;
-        cassePossible++;
-      }
-      else i = 8;
-      if(plateau[x + i][y + i].getType() != AUCUN)
-      {
-        i = 8;
-      }
-    }
-    for (int i = 1; i<7; i++ )//a modifier si en case 00 nous avons pas 7 valeur
-    {
-      if(y - i >= 0 && y - i <= 7 && x - i >= 0 && x - i <= 7 && (plateau[x - i][y - i].getType() == AUCUN || (plateau[x - i][y - i].getType() != AUCUN && plateau[x - i][y - i].getCouleur() != maCouleur)))//--
-      {
-        X[cassePossible] = x - i;
-        Y[cassePossible] = y - i;
-        cassePossible++;
-      }
-      else i = 8;
-      if(plateau[x - i][y - i].getType() != AUCUN)
-      {
-        i = 8;
-      }
-    }
+  if (t == FOU) {
+    int directions[4][2] = {{1,1}, {1,-1}, {-1,1}, {-1,-1}};
+    for (int d = 0; d < 4; d++) {
+        for (int i = 1; i < 8; i++) {
+            int nx = x + i * directions[d][0];
+            int ny = y + i * directions[d][1];
 
-    for (int i = 1; i<7; i++ )//a modifier si en case 00 nous avons pas 7 valeur
-    {
-      if(y - i >= 0 && y - i <= 7 && x + i >= 0 && x + i <= 7 && (plateau[x + i][y - i].getType() == AUCUN || (plateau[x + i][y - i].getType() != AUCUN && plateau[x + i][y - i].getCouleur() != maCouleur)))//+-
-      {
-        X[cassePossible] = x + i;
-        Y[cassePossible] = y - i;
-        cassePossible++;
-      }
-      else i = 8;
-      if(plateau[x + i][y - i].getType() != AUCUN)
-      {
-        i = 8;
-      }
-    }
+            // 1. Vérifier si on sort du plateau
+            if (nx < 0 || nx > 7 || ny < 0 || ny > 7) break;
 
-    for (int i = 1; i<7; i++ )//a modifier si en case 00 nous avons pas 7 valeur
-    {
-      if(y + i >= 0 && y + i <= 7 && x - i >= 0 && x - i <= 7 && (plateau[x - i][y + i].getType() == AUCUN || (plateau[x - i][y + i].getType() != AUCUN && plateau[x - i][y + i].getCouleur() != maCouleur)))//-+
-      {
-        X[cassePossible] = x - i;
-        Y[cassePossible] = y + i;
-        cassePossible++;
-      }
-      else i = 8;
-      if(plateau[x - i][y + i].getType() != AUCUN)
-      {
-        i = 8;
-      }
+            // 2. Case vide : on ajoute et on continue
+            if (plateau[nx][ny].getType() == AUCUN) {
+                X[cassePossible] = nx;
+                Y[cassePossible] = ny;
+                cassePossible++;
+            } 
+            // 3. Pièce adverse : on ajoute la capture puis on s'arrête
+            else if (plateau[nx][ny].getCouleur() != maCouleur) {
+                X[cassePossible] = nx;
+                Y[cassePossible] = ny;
+                cassePossible++;
+                break;
+            } 
+            // 4. Pièce alliée : on s'arrête immédiatement
+            else {
+                break;
+            }
+        }
     }
-  }
 
   Serial.println("Coup possible:");
-  strip.show();
+  //strip.show();
   for(int i = 0; i<cassePossible; i++){
     Serial.print("X: ");
     Serial.print(X[i]);
