@@ -1,47 +1,52 @@
-// Auteur Adrien et léni
-//programme test regle jeu echec
-//config : speed serial 115200 / PIN_LED : a modifer en fonction arduino uno et esp32
+// Auteur Adrien et Léni
+// Programme test règles jeu d'échecs
+// Config : Serial 115200 / PIN_LED à modifier selon Arduino UNO ou ESP32
 
-//Bonjour Adrien
+//==============================================================
+//  En-tête et inclusions
+//==============================================================
 
 #include <Wire.h>
 #include <Adafruit_NeoPixel.h>
 #include "A31301.h"
 #include "config.h"
 
+//==============================================================
+// Configuration matérielle (LEDs)
+//==============================================================
 
+//------------------Constantes LEDs------------------
 
-//-----------variables globales------------//
-
-#define LED_PIN A4    // Broche GPIO de l'ESP32 --> A4 et Arduino UNO --> 2
-#define LED_COUNT 64  // Nombre de leds par module
-
+#define LED_PIN A4    // Broche GPIO : A4 (ESP32) ou 2 (Arduino UNO)
+#define LED_COUNT 64  // Nombre de LEDs (une par case)
 
 Adafruit_NeoPixel strip(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
-// Fonction pour remplir les pixels un par un
+
+//------------------Fonctions de pilotage LEDs------------------
+
+//Remplissage séquentiel (effet démo)
 void colorWipe(uint32_t color, int wait) {
   for (int i = 0; i < strip.numPixels(); i++) {
     strip.setPixelColor(i, color);
-    //strip.show();
     delay(wait);
   }
 }
 
+//Allumer une case via le tableau de mapping
 void setuLED(uint8_t addr_led, uint32_t color) {
-  strip.setPixelColor(tab_LED[addr_led] - 1, color);
-  //strip.show();
-  //delay(10);
+  strip.setPixelColor(tab_LED[addr_led] - 1, color);  // tab_LED mappe index case -> index LED physique
 }
 
+//==============================================================
+//  Modèle de données (échecs)
+//==============================================================
 
-
-
-
-
+//------------------Types et énumérations------------------
 
 enum Couleur { VIDE,
                BLANC,
                NOIR };
+
 enum TypePiece { AUCUN,
                  PION,
                  CAVALIER,
@@ -50,20 +55,23 @@ enum TypePiece { AUCUN,
                  DAME,
                  ROI };
 
+//------------------Classe Piece------------------
+
+//Titre sous-partie : Représentation d'une pièce sur le plateau
 class Piece {
 private:
   TypePiece type;
   Couleur couleur;
   bool active;
-  int x, y;            // Coordonnées (0 à 7)
-  int nbDeplacements;  // Pour gérer le premier pas du pion et le roque
+  int x, y;            // Coordonnées (0 à 7), convention plateau[x][y]
+  int nbDeplacements;  // Pour premier pas du pion (avance 2) et roque
 
 public:
-  // Constructeur par défaut
+  // Constructeur par défaut : case vide
   Piece()
     : type(AUCUN), couleur(VIDE), active(false), x(-1), y(-1), nbDeplacements(0) {}
 
-  // Constructeur complet
+  // Constructeur complet : pièce en position
   Piece(TypePiece t, Couleur c, int posX, int posY) {
     type = t;
     couleur = c;
@@ -74,24 +82,12 @@ public:
   }
 
   // --- Getters ---
-  TypePiece getType() {
-    return type;
-  }
-  Couleur getCouleur() {
-    return couleur;
-  }
-  bool estActive() {
-    return active;
-  }
-  int getX() {
-    return x;
-  }
-  int getY() {
-    return y;
-  }
-  int getNbDeplacements() {
-    return nbDeplacements;
-  }
+  TypePiece getType() { return type; }
+  Couleur getCouleur() { return couleur; }
+  bool estActive() { return active; }
+  int getX() { return x; }
+  int getY() { return y; }
+  int getNbDeplacements() { return nbDeplacements; }
 
   // --- Setters ---
   void setPosition(int newX, int newY) {
@@ -100,11 +96,9 @@ public:
     nbDeplacements++;
   }
 
-  void setActive(bool etat) {
-    active = etat;
-  }
+  void setActive(bool etat) { active = etat; }
 
-  // Utile pour le reset du jeu
+  // Réinitialise la pièce (type, couleur, position, nb coups)
   void reset(TypePiece t, Couleur c, int posX, int posY) {
     type = t;
     couleur = c;
@@ -113,82 +107,92 @@ public:
     active = true;
     nbDeplacements = 0;
   }
+
+  // Vide la case (plus de pièce)
   void vider() {
     type = AUCUN;
     couleur = VIDE;
     active = false;
     nbDeplacements = 0;
-    // x et y peuvent rester ou être mis à -1
   }
 };
+
+//------------------État global du plateau------------------
+
 void calculerDeplacements(Piece &p);
 void afficherPlateauSerial();
-Piece plateau[8][8];
 
+Piece plateau[8][8];  // plateau[x][y], x = colonne, y = ligne
+
+//==============================================================
+//  Initialisation (setup)
+//==============================================================
 
 void setup() {
-  // Initialize serial communication
   Serial.begin(115200);
   while (!Serial) {
     Serial.println("pas de serial");
   }
   Serial.println("Setup");
-  Wire.begin();
-  strip.begin();             // Initialise la communication avec les LEDs
-  strip.show();              // Éteint tout au démarrage
-  strip.setBrightness(100);  // Luminosité à environ 20% pour 50 (pour économiser le courant via USB)
+
+  Wire.begin();              // I2C pour magnétomètres A31301
+  strip.begin();             // Communication NeoPixel
+  strip.show();              // Éteint toutes les LEDs au démarrage
+  strip.setBrightness(100);  // Luminosité ~20% (économie courant USB)
 }
+
+//==============================================================
+//  Boucle principale (loop)
+//==============================================================
 
 void loop() {
 
+  //------------------Lecture capteurs et envoi série------------------
 
-  //---------Gestion des cases du plateau--------
-  //Serial.println("-----------------");
+  //Titre sous-partie : En-tête trame (0xAA 0xBB = début paquet)
   Serial.write(0xAA);
   Serial.write(0xBB);
   uint8_t checksum = 0;
   int16_t ValeurZ = 0;
-  //Etat = 0 (Noir), 1 (Blanc), 2 (Rien)
-  uint8_t etat = 0;
+  uint8_t etat = 0;  // 0 = Noir, 1 = Blanc, 2 = Vide
 
+  //Parcours des 64 cases du plateau
   for (uint8_t k = 0; k < 8; k++) {
     for (uint8_t j = 0; j < 8; j++) {
-      if (presence_pion_blanc((j + (k * 8)))) {
-        //Serial.print("| B ");
-        setuLED((j + (k * 8)), strip.Color(255, 255, 255));
+      uint8_t indexCase = j + (k * 8);
+
+      if (presence_pion_blanc(indexCase)) {
+        setuLED(indexCase, strip.Color(255, 255, 255));  // LED blanche
         etat = 1;
-        plateau[j][k].reset(FOU, NOIR, j, k);
+        plateau[j][k].reset(FOU, NOIR, j, k);  // TODO : mapper type réel depuis capteur
         calculerDeplacements(plateau[j][k]);
-      } else if (presence_pion_noir((j + (k * 8)))) {
-        //Serial.print("| N ");
-        setuLED((j + (k * 8)), strip.Color(255, 255, 0));
+      } else if (presence_pion_noir(indexCase)) {
+        setuLED(indexCase, strip.Color(255, 255, 0));    // LED jaune
         etat = 0;
       } else {
-        //Serial.print("| - ");
-        setuLED((j + (k * 8)), strip.Color(0, 0, 0));
+        setuLED(indexCase, strip.Color(0, 0, 0));       // LED éteinte
         etat = 2;
       }
-      ValeurZ = getZ((j + (k * 8)));
+
+      ValeurZ = getZ(indexCase);
       uint8_t highZ = (ValeurZ >> 8) & 0xFF;
       uint8_t lowZ = ValeurZ & 0xFF;
-      Serial.write((j + (k * 8)));
-      Serial.write(highZ);  // Valeur Z (partie haute)
-      Serial.write(lowZ);   // Valeur Z (partie basse)
-      Serial.write(etat);   // État du pion
-      checksum += ((j + (k * 8)) + highZ + lowZ + etat);
+      Serial.write(indexCase);
+      Serial.write(highZ);
+      Serial.write(lowZ);
+      Serial.write(etat);
+      checksum += (indexCase + highZ + lowZ + etat);
     }
-    //Serial.print("|\n");
-    //Serial.println("-----------------");
   }
   Serial.write(checksum);
 
-
+  //------------------Traitement des commandes série------------------
 
   if (Serial.available() > 0) {
     String cmd = Serial.readStringUntil('\n');
     cmd.trim();
 
-    // INTERROGER (ex: "1,6")
+    //Titre sous-partie : Interroger une case (ex: "1,6") → affiche les coups possibles
     if (cmd.length() == 3) {
       int x = cmd.substring(0, 1).toInt();
       int y = cmd.substring(2, 3).toInt();
@@ -199,11 +203,13 @@ void loop() {
         calculerDeplacements(plateau[x][y]);
       }
     }
-    // --- COMMANDE VISUELLE ---
+
+    //Titre sous-partie : Commande visuelle (?) → affiche le plateau en texte
     if (cmd == "?") {
       afficherPlateauSerial();
     }
-    // DEPLACER (ex: "1,6 1,4")
+
+    //Titre sous-partie : Déplacer (ex: "1,6 1,4") → origine vers destination
     else if (cmd.length() >= 7) {
       int x1 = cmd.substring(0, 1).toInt();
       int y1 = cmd.substring(2, 3).toInt();
@@ -217,12 +223,21 @@ void loop() {
         Serial.println("Coup effectue.");
       }
     }
+
+    //Titre sous-partie : Commande test (GO) → place un pion noir en 2,4
     if (cmd == "GO") {
       plateau[2][4].reset(PION, NOIR, 2, 4);
     }
   }
 }
 
+//==============================================================
+//  Moteur de règles (calcul des déplacements)
+//==============================================================
+
+//------------------Génération des coups pseudo-légaux------------------
+
+//Titre sous-partie : Calcule et affiche les cases atteignables pour une pièce
 void calculerDeplacements(Piece &p) {
   int x = p.getX();
   int y = p.getY();
@@ -230,44 +245,50 @@ void calculerDeplacements(Piece &p) {
   TypePiece t = p.getType();
   Couleur maCouleur = p.getCouleur();
 
-  // Directions : {dx, dy}
+  // Directions de déplacement (réutilisables pour Tour, Fou, Dame)
   int dirCavalier[8][2] = { { -2, 1 }, { -1, 2 }, { 1, 2 }, { 2, 1 }, { 2, -1 }, { 1, -2 }, { -1, -2 }, { -2, -1 } };
   int dirRook[4][2] = { { 0, 1 }, { 0, -1 }, { 1, 0 }, { -1, 0 } };
   int dirBishop[4][2] = { { 1, 1 }, { 1, -1 }, { -1, 1 }, { -1, -1 } };
 
-
   int cassePossible = 0;
   int X[40];
   int Y[40];
-  // --- PION ---
-  // --- PION ---
-  if (t == PION) {
-    int dirY = (maCouleur == BLANC) ? 1 : -1;
 
-    // Avance simple
+  //------------------Règles PION------------------
+
+  if (t == PION) {
+    int dirY = (maCouleur == BLANC) ? 1 : -1;  // Blanc monte (y+), Noir descend (y-)
+
+    // Avance simple (1 case)
     if (y + dirY >= 0 && y + dirY <= 7 && plateau[x][y + dirY].getType() == AUCUN) {
       X[cassePossible] = x;
       Y[cassePossible] = y + dirY;
       cassePossible++;
 
+      // Premier coup : avance de 2 cases
       if (nbrDeplacment == 0 && plateau[x][y + 2 * dirY].getType() == AUCUN) {
         X[cassePossible] = x;
         Y[cassePossible] = y + 2 * dirY;
         cassePossible++;
       }
     }
+
+    // Capture diagonale droite
     if (y + dirY >= 0 && y + dirY <= 7 && x + dirY >= 0 && x + dirY <= 7 && plateau[x + dirY][y + dirY].getType() != AUCUN && plateau[x + dirY][y + dirY].getCouleur() != maCouleur) {
       X[cassePossible] = x + dirY;
       Y[cassePossible] = y + dirY;
       cassePossible++;
     }
 
+    // Capture diagonale gauche
     if (y + dirY >= 0 && y + dirY <= 7 && x - dirY >= 0 && x - dirY <= 7 && plateau[x - dirY][y + dirY].getType() != AUCUN && plateau[x - dirY][y + dirY].getCouleur() != maCouleur) {
       X[cassePossible] = x - dirY;
       Y[cassePossible] = y + dirY;
       cassePossible++;
     }
   }
+
+  //------------------Règles FOU------------------
 
   if (t == FOU) {
     int directions[4][2] = { { 1, 1 }, { 1, -1 }, { -1, 1 }, { -1, -1 } };
@@ -276,58 +297,55 @@ void calculerDeplacements(Piece &p) {
         int nx = x + i * directions[d][0];
         int ny = y + i * directions[d][1];
 
-        // 1. Vérifier si on sort du plateau
-        if (nx < 0 || nx > 7 || ny < 0 || ny > 7) break;
+        if (nx < 0 || nx > 7 || ny < 0 || ny > 7) break;  // Sortie du plateau
 
-        // 2. Case vide : on ajoute et on continue
         if (plateau[nx][ny].getType() == AUCUN) {
           X[cassePossible] = nx;
           Y[cassePossible] = ny;
           cassePossible++;
-        }
-        // 3. Pièce adverse : on ajoute la capture puis on s'arrête
-        else if (plateau[nx][ny].getCouleur() != maCouleur) {
+        } else if (plateau[nx][ny].getCouleur() != maCouleur) {
           X[cassePossible] = nx;
           Y[cassePossible] = ny;
           cassePossible++;
-          break;
-        }
-        // 4. Pièce alliée : on s'arrête immédiatement
-        else {
-          break;
+          break;  // Capture : on s'arrête
+        } else {
+          break;  // Pièce alliée : on s'arrête
         }
       }
     }
   }
 
+  //------------------Affichage des coups (Serial + LEDs rouges)------------------
+
   Serial.println("Coup possible:");
-  //strip.show();
   for (int i = 0; i < cassePossible; i++) {
     Serial.print("X: ");
     Serial.print(X[i]);
     Serial.print(" | Y: ");
     Serial.println(Y[i]);
-    setuLED((X[i] + (Y[i] * 8)), strip.Color(255, 0, 0));
+    setuLED((X[i] + (Y[i] * 8)), strip.Color(255, 0, 0));  // LED rouge = case atteignable
   }
   strip.show();
 }
 
+//==============================================================
+//  Affichage et débogage
+//==============================================================
 
-
+//------------------Affichage plateau en texte (Serial)------------------
 
 void afficherPlateauSerial() {
   Serial.println("\n    0    1    2    3    4    5    6    7   (X)");
-  Serial.println("  +----+----+----+----+----+----+----+----+");
+  Serial.println("  +------------------+------------------+------------------+------------------+------------------+------------------+------------------+------------------+");
 
   for (int y = 0; y < 8; y++) {
     Serial.print(y);
-    Serial.print(" | ");  // Indice de ligne Y
+    Serial.print(" | ");
     for (int x = 0; x < 8; x++) {
       Piece &p = plateau[x][y];
       if (p.getType() == AUCUN) {
         Serial.print("  ");
       } else {
-        // Initiale de la pièce (P, C, F, T, D, R)
         char c;
         switch (p.getType()) {
           case PION: c = 'P'; break;
@@ -338,14 +356,13 @@ void afficherPlateauSerial() {
           case ROI: c = 'R'; break;
           default: c = ' '; break;
         }
-        // Minuscule pour Noir, Majuscule pour Blanc
-        if (p.getCouleur() == NOIR) c = c + 32;
+        if (p.getCouleur() == NOIR) c = c + 32;  // Minuscule = Noir
         Serial.print(c);
-        Serial.print((p.getCouleur() == BLANC) ? "b" : "n");  // b pour blanc, n pour noir
+        Serial.print((p.getCouleur() == BLANC) ? "b" : "n");
       }
       Serial.print(" | ");
     }
     Serial.println();
-    Serial.println("  +----+----+----+----+----+----+----+----+");
+    Serial.println("  +------------------+------------------+------------------+------------------+------------------+------------------+------------------+------------------+");
   }
 }
