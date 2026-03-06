@@ -119,7 +119,10 @@ public:
 
 //------------------État global du plateau------------------
 
-void calculerDeplacements(Piece &p);
+#define MAX_COUPS 40
+
+int genererCoupsPossibles(Piece &p, int X[], int Y[]);
+void afficherCoupsPossibles(int X[], int Y[], int nbCoups);
 void afficherPlateauSerial();
 
 Piece plateau[8][8];  // plateau[x][y], x = colonne, y = ligne
@@ -235,95 +238,152 @@ void loop() {
 //  Moteur de règles (calcul des déplacements)
 //==============================================================
 
-//------------------Génération des coups pseudo-légaux------------------
+// Déclarations anticipées (générateurs par pièce)
+int genererCoupsPion(Piece &p, int X[], int Y[]);
+int genererCoupsFou(Piece &p, int X[], int Y[]);
+int genererCoupsTour(Piece &p, int X[], int Y[]);
+int genererCoupsDame(Piece &p, int X[], int Y[]);
+int genererCoupsCavalier(Piece &p, int X[], int Y[]);
+int genererCoupsRoi(Piece &p, int X[], int Y[]);
+int ajouterCoupsDirections(Piece &p, const int dir[][2], int nbDir, int X[], int Y[]);
 
-//Titre sous-partie : Calcule et affiche les cases atteignables pour une pièce
+//------------------Point d'entrée principal------------------
+
+// Dispatche vers le bon générateur selon le type de pièce, puis appelle l'affichage
 void calculerDeplacements(Piece &p) {
-  int x = p.getX();
-  int y = p.getY();
-  int nbrDeplacment = p.getNbDeplacements();
+  int X[MAX_COUPS];
+  int Y[MAX_COUPS];
+  int nbCoups = genererCoupsPossibles(p, X, Y);
+  afficherCoupsPossibles(X, Y, nbCoups);
+}
+
+//------------------Génération des coups (logique pure, sans affichage)------------------
+
+// Dispatche selon le type de pièce. Retourne le nombre de coups, remplit X[] et Y[].
+int genererCoupsPossibles(Piece &p, int X[], int Y[]) {
   TypePiece t = p.getType();
-  Couleur maCouleur = p.getCouleur();
+  int nb = 0;
 
-  // Directions de déplacement (réutilisables pour Tour, Fou, Dame)
-  int dirCavalier[8][2] = { { -2, 1 }, { -1, 2 }, { 1, 2 }, { 2, 1 }, { 2, -1 }, { 1, -2 }, { -1, -2 }, { -2, -1 } };
-  int dirRook[4][2] = { { 0, 1 }, { 0, -1 }, { 1, 0 }, { -1, 0 } };
-  int dirBishop[4][2] = { { 1, 1 }, { 1, -1 }, { -1, 1 }, { -1, -1 } };
+  switch (t) {
+    case PION:   nb = genererCoupsPion(p, X, Y);   break;
+    case FOU:    nb = genererCoupsFou(p, X, Y);    break;
+    case TOUR:   nb = genererCoupsTour(p, X, Y);   break;
+    case DAME:   nb = genererCoupsDame(p, X, Y);   break;
+    case CAVALIER: nb = genererCoupsCavalier(p, X, Y); break;
+    case ROI:    nb = genererCoupsRoi(p, X, Y);    break;
+    default:     break;
+  }
+  return nb;
+}
 
-  int cassePossible = 0;
-  int X[40];
-  int Y[40];
+// Pion : avance 1 ou 2, captures diagonales
+int genererCoupsPion(Piece &p, int X[], int Y[]) {
+  int x = p.getX(), y = p.getY(), n = p.getNbDeplacements();
+  Couleur c = p.getCouleur();
+  int dirY = (c == BLANC) ? 1 : -1;
+  int nb = 0;
 
-  //------------------Règles PION------------------
+  if (y + dirY < 0 || y + dirY > 7) return 0;
 
-  if (t == PION) {
-    int dirY = (maCouleur == BLANC) ? 1 : -1;  // Blanc monte (y+), Noir descend (y-)
-
-    // Avance simple (1 case)
-    if (y + dirY >= 0 && y + dirY <= 7 && plateau[x][y + dirY].getType() == AUCUN) {
-      X[cassePossible] = x;
-      Y[cassePossible] = y + dirY;
-      cassePossible++;
-
-      // Premier coup : avance de 2 cases
-      if (nbrDeplacment == 0 && plateau[x][y + 2 * dirY].getType() == AUCUN) {
-        X[cassePossible] = x;
-        Y[cassePossible] = y + 2 * dirY;
-        cassePossible++;
-      }
-    }
-
-    // Capture diagonale droite
-    if (y + dirY >= 0 && y + dirY <= 7 && x + dirY >= 0 && x + dirY <= 7 && plateau[x + dirY][y + dirY].getType() != AUCUN && plateau[x + dirY][y + dirY].getCouleur() != maCouleur) {
-      X[cassePossible] = x + dirY;
-      Y[cassePossible] = y + dirY;
-      cassePossible++;
-    }
-
-    // Capture diagonale gauche
-    if (y + dirY >= 0 && y + dirY <= 7 && x - dirY >= 0 && x - dirY <= 7 && plateau[x - dirY][y + dirY].getType() != AUCUN && plateau[x - dirY][y + dirY].getCouleur() != maCouleur) {
-      X[cassePossible] = x - dirY;
-      Y[cassePossible] = y + dirY;
-      cassePossible++;
+  if (plateau[x][y + dirY].getType() == AUCUN) {
+    X[nb] = x; Y[nb] = y + dirY; nb++;
+    if (n == 0 && plateau[x][y + 2 * dirY].getType() == AUCUN) {
+      X[nb] = x; Y[nb] = y + 2 * dirY; nb++;
     }
   }
+  for (int d = 0; d < 2; d++) {
+    int dx = (d == 0) ? 1 : -1;
+    int nx = x + dx;
+    if (nx >= 0 && nx <= 7 && plateau[nx][y + dirY].getType() != AUCUN && plateau[nx][y + dirY].getCouleur() != c) {
+      X[nb] = nx; Y[nb] = y + dirY; nb++;
+    }
+  }
+  return nb;
+}
 
-  //------------------Règles FOU------------------
+// Fou : déplacements en diagonale (réutilise ajouterCoupsDirection)
+int genererCoupsFou(Piece &p, int X[], int Y[]) {
+  const int dir[4][2] = { { 1, 1 }, { 1, -1 }, { -1, 1 }, { -1, -1 } };
+  return ajouterCoupsDirections(p, dir, 4, X, Y);
+}
 
-  if (t == FOU) {
-    int directions[4][2] = { { 1, 1 }, { 1, -1 }, { -1, 1 }, { -1, -1 } };
-    for (int d = 0; d < 4; d++) {
-      for (int i = 1; i < 8; i++) {
-        int nx = x + i * directions[d][0];
-        int ny = y + i * directions[d][1];
+// Tour : déplacements en ligne (réutilise ajouterCoupsDirection)
+int genererCoupsTour(Piece &p, int X[], int Y[]) {
+  const int dir[4][2] = { { 0, 1 }, { 0, -1 }, { 1, 0 }, { -1, 0 } };
+  return ajouterCoupsDirections(p, dir, 4, X, Y);
+}
 
-        if (nx < 0 || nx > 7 || ny < 0 || ny > 7) break;  // Sortie du plateau
+// Dame : Fou + Tour
+int genererCoupsDame(Piece &p, int X[], int Y[]) {
+  const int dir[8][2] = { { 1, 1 }, { 1, -1 }, { -1, 1 }, { -1, -1 }, { 0, 1 }, { 0, -1 }, { 1, 0 }, { -1, 0 } };
+  return ajouterCoupsDirections(p, dir, 8, X, Y);
+}
 
-        if (plateau[nx][ny].getType() == AUCUN) {
-          X[cassePossible] = nx;
-          Y[cassePossible] = ny;
-          cassePossible++;
-        } else if (plateau[nx][ny].getCouleur() != maCouleur) {
-          X[cassePossible] = nx;
-          Y[cassePossible] = ny;
-          cassePossible++;
-          break;  // Capture : on s'arrête
-        } else {
-          break;  // Pièce alliée : on s'arrête
-        }
+// Cavalier : 8 cases en L
+int genererCoupsCavalier(Piece &p, int X[], int Y[]) {
+  const int dir[8][2] = { { -2, 1 }, { -1, 2 }, { 1, 2 }, { 2, 1 }, { 2, -1 }, { 1, -2 }, { -1, -2 }, { -2, -1 } };
+  int x = p.getX(), y = p.getY();
+  Couleur c = p.getCouleur();
+  int nb = 0;
+  for (int d = 0; d < 8; d++) {
+    int nx = x + dir[d][0], ny = y + dir[d][1];
+    if (nx >= 0 && nx <= 7 && ny >= 0 && ny <= 7) {
+      if (plateau[nx][ny].getType() == AUCUN || plateau[nx][ny].getCouleur() != c) {
+        X[nb] = nx; Y[nb] = ny; nb++;
       }
     }
   }
+  return nb;
+}
 
-  //------------------Affichage des coups (Serial + LEDs rouges)------------------
+// Roi : 8 cases autour (1 case par direction)
+int genererCoupsRoi(Piece &p, int X[], int Y[]) {
+  const int dir[8][2] = { { 1, 0 }, { 1, 1 }, { 0, 1 }, { -1, 1 }, { -1, 0 }, { -1, -1 }, { 0, -1 }, { 1, -1 } };
+  int x = p.getX(), y = p.getY();
+  Couleur c = p.getCouleur();
+  int nb = 0;
+  for (int d = 0; d < 8; d++) {
+    int nx = x + dir[d][0], ny = y + dir[d][1];
+    if (nx >= 0 && nx <= 7 && ny >= 0 && ny <= 7) {
+      if (plateau[nx][ny].getType() == AUCUN || plateau[nx][ny].getCouleur() != c) {
+        X[nb] = nx; Y[nb] = ny; nb++;
+      }
+    }
+  }
+  return nb;
+}
 
+// Helper : parcourt une direction jusqu'à obstacle, ajoute les coups
+int ajouterCoupsDirections(Piece &p, const int dir[][2], int nbDir, int X[], int Y[]) {
+  int x = p.getX(), y = p.getY();
+  Couleur c = p.getCouleur();
+  int nb = 0;
+  for (int d = 0; d < nbDir; d++) {
+    for (int i = 1; i < 8; i++) {
+      int nx = x + i * dir[d][0], ny = y + i * dir[d][1];
+      if (nx < 0 || nx > 7 || ny < 0 || ny > 7) break;
+      if (plateau[nx][ny].getType() == AUCUN) {
+        X[nb] = nx; Y[nb] = ny; nb++;
+      } else {
+        if (plateau[nx][ny].getCouleur() != c) { X[nb] = nx; Y[nb] = ny; nb++; }
+        break;
+      }
+    }
+  }
+  return nb;
+}
+
+//------------------Affichage des coups (à personnaliser)------------------
+
+// Affiche les coups possibles : Serial + LEDs. Modifier ici pour changer l'affichage.
+void afficherCoupsPossibles(int X[], int Y[], int nbCoups) {
   Serial.println("Coup possible:");
-  for (int i = 0; i < cassePossible; i++) {
+  for (int i = 0; i < nbCoups; i++) {
     Serial.print("X: ");
     Serial.print(X[i]);
     Serial.print(" | Y: ");
     Serial.println(Y[i]);
-    setuLED((X[i] + (Y[i] * 8)), strip.Color(255, 0, 0));  // LED rouge = case atteignable
+    setuLED(X[i] + Y[i] * 8, strip.Color(255, 0, 0));  // LED rouge = case atteignable
   }
   strip.show();
 }
