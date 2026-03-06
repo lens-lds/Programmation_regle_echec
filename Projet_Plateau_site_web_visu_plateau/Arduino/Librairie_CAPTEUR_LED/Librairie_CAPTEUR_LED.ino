@@ -2,7 +2,7 @@
 //programme test regle jeu echec
 //config : speed serial 115200 / PIN_LED : a modifer en fonction arduino uno et esp32
 
-
+//Bonjour Adrien
 
 #include <Wire.h>
 #include <Adafruit_NeoPixel.h>
