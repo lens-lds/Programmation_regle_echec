@@ -11,6 +11,8 @@
 #include "A31301.h"
 #include "config.h"
 
+
+
 //==============================================================
 // Configuration matérielle (LEDs)
 //==============================================================
@@ -57,7 +59,7 @@ enum TypePiece { AUCUN,
 
 //------------------Classe Piece------------------
 
-//Titre sous-partie : Représentation d'une pièce sur le plateau
+// Représentation d'une pièce sur le plateau
 class Piece {
 private:
   TypePiece type;
@@ -121,6 +123,7 @@ public:
 
 #define MAX_COUPS 40
 
+void calculerDeplacements(Piece &p);
 int genererCoupsPossibles(Piece &p, int X[], int Y[]);
 void afficherCoupsPossibles(int X[], int Y[], int nbCoups);
 void afficherPlateauSerial();
@@ -152,7 +155,7 @@ void loop() {
 
   //------------------Lecture capteurs et envoi série------------------
 
-  //Titre sous-partie : En-tête trame (0xAA 0xBB = début paquet)
+  // En-tête trame (0xAA 0xBB = début paquet)
   Serial.write(0xAA);
   Serial.write(0xBB);
   uint8_t checksum = 0;
@@ -167,7 +170,7 @@ void loop() {
       if (presence_pion_blanc(indexCase)) {
         setuLED(indexCase, strip.Color(255, 255, 255));  // LED blanche
         etat = 1;
-        plateau[j][k].reset(FOU, NOIR, j, k);  // TODO : mapper type réel depuis capteur
+        plateau[j][k].reset(ROI, BLANC, j, k);  // TODO : mapper type réel depuis capteur
         calculerDeplacements(plateau[j][k]);
       } else if (presence_pion_noir(indexCase)) {
         setuLED(indexCase, strip.Color(255, 255, 0));    // LED jaune
@@ -195,7 +198,7 @@ void loop() {
     String cmd = Serial.readStringUntil('\n');
     cmd.trim();
 
-    //Titre sous-partie : Interroger une case (ex: "1,6") → affiche les coups possibles
+    // Interroger une case (ex: "1,6") → affiche les coups possibles
     if (cmd.length() == 3) {
       int x = cmd.substring(0, 1).toInt();
       int y = cmd.substring(2, 3).toInt();
@@ -207,12 +210,12 @@ void loop() {
       }
     }
 
-    //Titre sous-partie : Commande visuelle (?) → affiche le plateau en texte
+    // Commande visuelle (?) → affiche le plateau en texte
     if (cmd == "?") {
       afficherPlateauSerial();
     }
 
-    //Titre sous-partie : Déplacer (ex: "1,6 1,4") → origine vers destination
+    // Déplacer (ex: "1,6 1,4") → origine vers destination
     else if (cmd.length() >= 7) {
       int x1 = cmd.substring(0, 1).toInt();
       int y1 = cmd.substring(2, 3).toInt();
@@ -227,7 +230,7 @@ void loop() {
       }
     }
 
-    //Titre sous-partie : Commande test (GO) → place un pion noir en 2,4
+    // Commande test (GO) → place un pion noir en 2,4
     if (cmd == "GO") {
       plateau[2][4].reset(PION, NOIR, 2, 4);
     }
