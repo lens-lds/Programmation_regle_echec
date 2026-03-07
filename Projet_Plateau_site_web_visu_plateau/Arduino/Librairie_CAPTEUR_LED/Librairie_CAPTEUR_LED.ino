@@ -99,6 +99,7 @@ public:
   }
 
   void setActive(bool etat) { active = etat; }
+  void setNbDeplacements(int n) { nbDeplacements = n; }
 
   // Réinitialise la pièce (type, couleur, position, nb coups)
   void reset(TypePiece t, Couleur c, int posX, int posY) {
@@ -131,9 +132,10 @@ void calculerDeplacements(Piece &p);
 int genererCoupsPossibles(Piece &p, int X[], int Y[]);
 void afficherCoupsPossibles(int X[], int Y[], int nbCoups);
 void afficherPlateauSerial();
-void afficherPlateauLED();       // Met à jour les LEDs selon l'état du plateau (pour test)
-void initPositionEnPassant();    // Position de test : pion blanc e2, pion noir d4
-void appliquerCoup(int x1, int y1, int x2, int y2);  // Applique un coup + gestion en passant
+void afficherPlateauLED();       // Met à jour les LEDs selon l'état du plateau
+void syncPlateauDepuisCapteurs(); // Lit les 64 capteurs et met à jour plateau (PION blanc/noir)
+void initPositionEnPassant();    // Réinit tour + en passant (plateau = capteurs)
+void appliquerCoup(int x1, int y1, int x2, int y2);  // Met à jour en passant + tour (plateau = capteurs)
 
 // À appeler par le binôme quand il applique un coup :
 // - Après un double pas du pion : setEnPassantTarget(col, row) avec la case où un pion adverse peut atterrir en prenant en passant.
@@ -145,9 +147,13 @@ void clearEnPassantTarget();
 
 Piece plateau[8][8];  // plateau[x][y], x = colonne, y = ligne
 
-bool tourBlanc = true;   // true = les blancs jouent, false = les noirs
-int selectionX = -1;     // -1 = aucune pièce sélectionnée, sinon case (selectionX, selectionY)
-int selectionY = -1;
+bool tourBlanc = true;
+int fromX = -1, fromY = -1;  // Pièce en main : case d'origine (-1 = aucune)
+int possibleMoveX[MAX_COUPS], possibleMoveY[MAX_COUPS], nbPossibleMoves = 0;
+int captureRedCol = -1, captureRedRow = -1;  // Case à afficher en rouge (pièce mangée)
+unsigned long captureRedUntil = 0;           // Jusqu'à quel moment (millis)
+uint8_t prevType[64], prevColor[64];         // État précédent pour détecter soulèvement/pose
+uint8_t prevNb[64];
 
 //==============================================================
 //  Initialisation (setup)
@@ -165,90 +171,114 @@ void setup() {
   strip.show();
   strip.setBrightness(100);
 
-  initPositionEnPassant();  // Position de test : pion blanc e2, pion noir d4 (c'est au blanc de jouer)
-  Serial.println("Pret. Envoyer EP pour reinit, ? pour plateau, x,y pour selection, x1,y1 x2,y2 pour jouer.");
+  clearEnPassantTarget();
+  tourBlanc = true;
+  fromX = -1;
+  fromY = -1;
+  captureRedCol = -1;
+  captureRedRow = -1;
+  captureRedUntil = 0;
+  for (int i = 0; i < 64; i++) prevType[i] = AUCUN;
+  Serial.println("Pret. Placez les pions. Prenez une piece du camp au trait -> coups en BLEU. Posez sur une case bleue -> coup joue, case mangee en ROUGE.");
 }
 
 //==============================================================
-//  Boucle principale (loop) — test en passant
+//  Boucle principale (loop) — détection au plateau
 //==============================================================
-//
-// À chaque tour : on affiche le plateau en LEDs, puis si une pièce est "sélectionnée"
-// on affiche ses coups possibles en ROUGE par-dessus. Ensuite on lit une commande série si elle arrive.
-//
-// Commandes (moniteur série 115200, envoyer avec Entrée) :
-//   EP         → réinitialise la position (pion blanc e2, pion noir d4). C'est au blanc de jouer.
-//   ?          → affiche le plateau en texte dans le moniteur.
-//   x,y        → sélectionne la pièce en (x,y). Seule la pièce du camp au trait peut être sélectionnée.
-//                Les cases où elle peut aller s'allument en ROUGE (et restent allumées jusqu'au prochain coup).
-//                Ex. "4,1" = pion blanc e2 ; "3,3" = pion noir d4.
-//   x1,y1 x2,y2 → joue le coup de (x1,y1) vers (x2,y2). Ex. "4,1 4,3" = e2-e4 (double pas).
-//
+// Prendre une pièce du camp au trait -> ses coups possibles s'affichent en BLEU.
+// Poser la pièce sur une case bleue -> coup joué ; si capture, la case de la pièce mangée devient ROUGE.
+// Commande série : EP = réinit, ? = afficher plateau texte.
 
 void loop() {
+  syncPlateauDepuisCapteurs();
+
+  Couleur campTrait = tourBlanc ? BLANC : NOIR;
+
+  // Détection : pièce du camp au trait soulevée (était sur une case, maintenant vide)
+  if (fromX < 0) {
+    for (int j = 0; j < 8 && fromX < 0; j++) {
+      for (int k = 0; k < 8; k++) {
+        int idx = j + k * 8;
+        if (prevType[idx] != AUCUN && (Couleur)prevColor[idx] == campTrait && plateau[j][k].getType() == AUCUN) {
+          fromX = j;
+          fromY = k;
+          plateau[j][k].reset((TypePiece)prevType[idx], campTrait, j, k);
+          plateau[j][k].setNbDeplacements(prevNb[idx]);
+          nbPossibleMoves = genererCoupsPossibles(plateau[j][k], possibleMoveX, possibleMoveY);
+          plateau[j][k].vider();
+          break;
+        }
+      }
+    }
+  }
+
+  // Détection : pièce posée sur une case des coups possibles
+  if (fromX >= 0 && nbPossibleMoves > 0) {
+    for (int i = 0; i < nbPossibleMoves; i++) {
+      int tx = possibleMoveX[i], ty = possibleMoveY[i];
+      if (plateau[tx][ty].getType() != AUCUN && plateau[tx][ty].getCouleur() == campTrait) {
+        int capCol = -1, capRow = -1;
+        if (prevType[tx + ty * 8] != AUCUN && (Couleur)prevColor[tx + ty * 8] != campTrait) {
+          capCol = tx;
+          capRow = ty;
+        } else if (enPassantCol == tx && enPassantRow == ty) {
+          capCol = tx;
+          capRow = (campTrait == BLANC) ? ty - 1 : ty + 1;
+        }
+        if (capCol >= 0) {
+          captureRedCol = capCol;
+          captureRedRow = capRow;
+          captureRedUntil = millis() + 2000;
+        }
+        appliquerCoup(fromX, fromY, tx, ty);
+        tourBlanc = !tourBlanc;
+        fromX = -1;
+        fromY = -1;
+        nbPossibleMoves = 0;
+        break;
+      }
+    }
+  }
+
+  if (captureRedUntil > 0 && millis() > captureRedUntil) {
+    captureRedCol = -1;
+    captureRedRow = -1;
+    captureRedUntil = 0;
+  }
+
   afficherPlateauLED();
-  if (selectionX >= 0 && selectionY >= 0 && plateau[selectionX][selectionY].getType() != AUCUN)
-    calculerDeplacements(plateau[selectionX][selectionY]);
+  if (fromX >= 0) {
+    for (int i = 0; i < nbPossibleMoves; i++)
+      setuLED(possibleMoveX[i] + possibleMoveY[i] * 8, strip.Color(0, 0, 255));
+  }
+  if (captureRedCol >= 0)
+    setuLED(captureRedCol + captureRedRow * 8, strip.Color(255, 0, 0));
   strip.show();
 
-  if (Serial.available() <= 0) return;
+  for (int j = 0; j < 8; j++) {
+    for (int k = 0; k < 8; k++) {
+      int idx = j + k * 8;
+      prevType[idx] = plateau[j][k].getType();
+      prevColor[idx] = plateau[j][k].getCouleur();
+      prevNb[idx] = plateau[j][k].getNbDeplacements();
+    }
+  }
 
+  if (Serial.available() <= 0) return;
   String cmd = Serial.readStringUntil('\n');
   cmd.trim();
   if (cmd.length() == 0) return;
-
   if (cmd == "EP") {
     initPositionEnPassant();
-    tourBlanc = true;
-    selectionX = -1;
-    selectionY = -1;
-    Serial.println("Position chargee. Aux blancs. Selectionnez 4,1 (pion blanc e2).");
+    fromX = -1;
+    fromY = -1;
+    nbPossibleMoves = 0;
+    captureRedCol = -1;
+    captureRedRow = -1;
+    captureRedUntil = 0;
     return;
   }
-
-  if (cmd == "?") {
-    afficherPlateauSerial();
-    return;
-  }
-
-  // Commande "x,y" : sélectionner une pièce pour afficher ses coups en ROUGE.
-  // On n'affiche les coups que si c'est bien le tour de cette pièce (blanc ou noir).
-  if (cmd.length() == 3) {
-int x = cmd.substring(0, 1).toInt();
-    int y = cmd.substring(2, 3).toInt();
-    if (plateau[x][y].getType() == AUCUN) {
-      Serial.println("Case vide.");
-    } else if ((plateau[x][y].getCouleur() == BLANC) != tourBlanc) {
-      Serial.println("Pas a votre tour.");
-    } else {
-      selectionX = x;
-      selectionY = y;
-      Serial.println("Selection OK. Coups en ROUGE.");
-    }
-    return;
-  }
-
-  // Commande "x1,y1 x2,y2" : jouer le coup (origine -> destination).
-  if (cmd.length() >= 7) {
-    int x1 = cmd.substring(0, 1).toInt();
-    int y1 = cmd.substring(2, 3).toInt();
-    int x2 = cmd.substring(4, 5).toInt();
-    int y2 = cmd.substring(6, 7).toInt();
-    if (plateau[x1][y1].getType() == AUCUN) {
-      Serial.println("Case origine vide.");
-    } else if ((plateau[x1][y1].getCouleur() == BLANC) != tourBlanc) {
-      Serial.println("Pas a votre tour.");
-    } else {
-      appliquerCoup(x1, y1, x2, y2);
-      tourBlanc = !tourBlanc;
-      selectionX = -1;
-      selectionY = -1;
-      Serial.println(tourBlanc ? "Aux blancs." : "Aux noirs.");
-    }
-    return;
-  }
-
-  Serial.println("Commande inconnue. EP / ? / x,y / x1,y1 x2,y2");
+  if (cmd == "?") afficherPlateauSerial();
 }
 
 //==============================================================
@@ -513,7 +543,7 @@ void afficherCoupsPossibles(int X[], int Y[], int nbCoups) {
     Serial.print(X[i]);
     Serial.print(" | Y: ");
     Serial.println(Y[i]);
-    setuLED(X[i] + Y[i] * 8, strip.Color(255, 0, 0));  // LED rouge = case atteignable
+    setuLED(X[i] + Y[i] * 8, strip.Color(0, 0, 255));  // LED bleue = case atteignable
   }
   strip.show();
 }
@@ -522,18 +552,37 @@ void afficherCoupsPossibles(int X[], int Y[], int nbCoups) {
 //  Affichage et débogage
 //==============================================================
 
+//------------------Synchronisation plateau depuis le hardware------------------
+
+void syncPlateauDepuisCapteurs() {
+  for (int k = 0; k < 8; k++) {
+    for (int j = 0; j < 8; j++) {
+      uint8_t idx = j + k * 8;
+      if (presence_pion_blanc(idx)) {
+        plateau[j][k].reset(PION, BLANC, j, k);
+        plateau[j][k].setNbDeplacements((k == 1) ? 0 : 1);  // 0 si rangée de départ
+      } else if (presence_pion_noir(idx)) {
+        plateau[j][k].reset(PION, NOIR, j, k);
+        plateau[j][k].setNbDeplacements((k == 6) ? 0 : 1);
+      } else {
+        plateau[j][k].vider();
+      }
+    }
+  }
+}
+
 //------------------Affichage plateau en LEDs------------------
 
 void afficherPlateauLED() {
   for (int y = 0; y < 8; y++) {
     for (int x = 0; x < 8; x++) {
       uint8_t idx = x + y * 8;
-      if (plateau[x][y].getType() == NOIR) {
-        setuLED(idx, strip.Color(255, 255, 0));
+      if (plateau[x][y].getType() == AUCUN) {
+        setuLED(idx, strip.Color(0, 0, 0));
       } else if (plateau[x][y].getCouleur() == BLANC) {
         setuLED(idx, strip.Color(255, 255, 255));
       } else {
-        setuLED(idx, strip.Color(0, 0, 0));
+        setuLED(idx, strip.Color(255, 255, 0));
       }
     }
   }
@@ -542,16 +591,20 @@ void afficherPlateauLED() {
 //------------------Position de test prise en passant------------------
 
 void initPositionEnPassant() {
-  for (int x = 0; x < 8; x++)
-    for (int y = 0; y < 8; y++)
-      plateau[x][y].vider();
-  plateau[4][1].reset(PION, BLANC, 4, 1);   // e2
-  plateau[3][3].reset(PION, NOIR, 3, 3);     // d4
   clearEnPassantTarget();
+  tourBlanc = true;
+  fromX = -1;
+  fromY = -1;
+  nbPossibleMoves = 0;
+  captureRedCol = -1;
+  captureRedRow = -1;
+  captureRedUntil = 0;
+  Serial.println("Reinit. Placez pion blanc e2 (4,1), pion noir d4 (3,3).");
 }
 
 //------------------Application d'un coup avec gestion en passant------------------
 
+// Met à jour uniquement la logique (en passant, tour). Les pièces = capteurs, pas de déplacement ici.
 void appliquerCoup(int x1, int y1, int x2, int y2) {
   if (plateau[x1][y1].getType() == AUCUN) {
     Serial.println("Case origine vide.");
@@ -565,25 +618,18 @@ void appliquerCoup(int x1, int y1, int x2, int y2) {
     clearEnPassantTarget();
   }
 
-  bool priseEnPassant = (p.getType() == PION && x1 != x2 && plateau[x2][y2].getType() == AUCUN && enPassantCol == x2 && enPassantRow == y2);
-  if (priseEnPassant) {
-    int rowPionCapture = (p.getCouleur() == BLANC) ? y2 - 1 : y2 + 1;
-    plateau[x2][rowPionCapture].vider();
+  if (p.getType() == PION && x1 != x2 && enPassantCol == x2 && enPassantRow == y2) {
+    clearEnPassantTarget();  // prise en passant (le pion capturé est retiré par toi sur le plateau)
   }
 
-  plateau[x2][y2] = plateau[x1][y1];
-  plateau[x2][y2].setPosition(x2, y2);
-  plateau[x1][y1].vider();
-  if (priseEnPassant) clearEnPassantTarget();
-
-  Serial.println("Coup effectue.");
+  Serial.println("Coup enregistre. Deplacez la piece sur le plateau.");
 }
 
 //------------------Affichage plateau en texte (Serial)------------------
 
 void afficherPlateauSerial() {
   Serial.println("\n    0    1    2    3    4    5    6    7   (X)");
-  Serial.println("  +------------------+------------------+------------------+------------------+------------------+------------------+------------------+------------------+");
+  Serial.println("  +----+----+----+----+----+----+----+----+");
 
   for (int y = 0; y < 8; y++) {
     Serial.print(y);
@@ -610,6 +656,6 @@ void afficherPlateauSerial() {
       Serial.print(" | ");
     }
     Serial.println();
-    Serial.println("  +------------------+------------------+------------------+------------------+------------------+------------------+------------------+------------------+");
+    Serial.println("  +----+----+----+----+----+----+----+----+");
   }
 }
