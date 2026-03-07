@@ -124,13 +124,16 @@ public:
 #define MAX_COUPS 40
 
 // Prise en passant : case cible (où le pion atterrit en prenant en passant). -1 = aucune.
-int enPassantCol = -1;
-int enPassantRow = -1;
+int enPassantCol = -1; // colonne de la case cible
+int enPassantRow = -1; // ligne de la case cible
 
 void calculerDeplacements(Piece &p);
 int genererCoupsPossibles(Piece &p, int X[], int Y[]);
 void afficherCoupsPossibles(int X[], int Y[], int nbCoups);
 void afficherPlateauSerial();
+void afficherPlateauLED();       // Met à jour les LEDs selon l'état du plateau (pour test)
+void initPositionEnPassant();    // Position de test : pion blanc e2, pion noir d4
+void appliquerCoup(int x1, int y1, int x2, int y2);  // Applique un coup + gestion en passant
 
 // À appeler par le binôme quand il applique un coup :
 // - Après un double pas du pion : setEnPassantTarget(col, row) avec la case où un pion adverse peut atterrir en prenant en passant.
@@ -141,6 +144,10 @@ void setEnPassantTarget(int col, int row);
 void clearEnPassantTarget();
 
 Piece plateau[8][8];  // plateau[x][y], x = colonne, y = ligne
+
+bool tourBlanc = true;   // true = les blancs jouent, false = les noirs
+int selectionX = -1;     // -1 = aucune pièce sélectionnée, sinon case (selectionX, selectionY)
+int selectionY = -1;
 
 //==============================================================
 //  Initialisation (setup)
@@ -154,99 +161,94 @@ void setup() {
   Serial.println("Setup");
 
   Wire.begin();              // I2C pour magnétomètres A31301
-  strip.begin();             // Communication NeoPixel
-  strip.show();              // Éteint toutes les LEDs au démarrage
-  strip.setBrightness(100);  // Luminosité ~20% (économie courant USB)
+  strip.begin();
+  strip.show();
+  strip.setBrightness(100);
+
+  initPositionEnPassant();  // Position de test : pion blanc e2, pion noir d4 (c'est au blanc de jouer)
+  Serial.println("Pret. Envoyer EP pour reinit, ? pour plateau, x,y pour selection, x1,y1 x2,y2 pour jouer.");
 }
 
 //==============================================================
-//  Boucle principale (loop)
+//  Boucle principale (loop) — test en passant
 //==============================================================
+//
+// À chaque tour : on affiche le plateau en LEDs, puis si une pièce est "sélectionnée"
+// on affiche ses coups possibles en ROUGE par-dessus. Ensuite on lit une commande série si elle arrive.
+//
+// Commandes (moniteur série 115200, envoyer avec Entrée) :
+//   EP         → réinitialise la position (pion blanc e2, pion noir d4). C'est au blanc de jouer.
+//   ?          → affiche le plateau en texte dans le moniteur.
+//   x,y        → sélectionne la pièce en (x,y). Seule la pièce du camp au trait peut être sélectionnée.
+//                Les cases où elle peut aller s'allument en ROUGE (et restent allumées jusqu'au prochain coup).
+//                Ex. "4,1" = pion blanc e2 ; "3,3" = pion noir d4.
+//   x1,y1 x2,y2 → joue le coup de (x1,y1) vers (x2,y2). Ex. "4,1 4,3" = e2-e4 (double pas).
+//
 
 void loop() {
+  afficherPlateauLED();
+  if (selectionX >= 0 && selectionY >= 0 && plateau[selectionX][selectionY].getType() != AUCUN)
+    calculerDeplacements(plateau[selectionX][selectionY]);
+  strip.show();
 
-  //------------------Lecture capteurs et envoi série------------------
+  if (Serial.available() <= 0) return;
 
-  // En-tête trame (0xAA 0xBB = début paquet)
-  Serial.write(0xAA);
-  Serial.write(0xBB);
-  uint8_t checksum = 0;
-  int16_t ValeurZ = 0;
-  uint8_t etat = 0;  // 0 = Noir, 1 = Blanc, 2 = Vide
+  String cmd = Serial.readStringUntil('\n');
+  cmd.trim();
+  if (cmd.length() == 0) return;
 
-  //Parcours des 64 cases du plateau
-  for (uint8_t k = 0; k < 8; k++) {
-    for (uint8_t j = 0; j < 8; j++) {
-      uint8_t indexCase = j + (k * 8);
-
-      if (presence_pion_blanc(indexCase)) {
-        setuLED(indexCase, strip.Color(255, 255, 255));  // LED blanche
-        etat = 1;
-        plateau[j][k].reset(ROI, BLANC, j, k);  // TODO : mapper type réel depuis capteur
-        calculerDeplacements(plateau[j][k]);
-      } else if (presence_pion_noir(indexCase)) {
-        setuLED(indexCase, strip.Color(255, 255, 0));    // LED jaune
-        etat = 0;
-      } else {
-        setuLED(indexCase, strip.Color(0, 0, 0));       // LED éteinte
-        etat = 2;
-      }
-
-      ValeurZ = getZ(indexCase);
-      uint8_t highZ = (ValeurZ >> 8) & 0xFF;
-      uint8_t lowZ = ValeurZ & 0xFF;
-      Serial.write(indexCase);
-      Serial.write(highZ);
-      Serial.write(lowZ);
-      Serial.write(etat);
-      checksum += (indexCase + highZ + lowZ + etat);
-    }
+  if (cmd == "EP") {
+    initPositionEnPassant();
+    tourBlanc = true;
+    selectionX = -1;
+    selectionY = -1;
+    Serial.println("Position chargee. Aux blancs. Selectionnez 4,1 (pion blanc e2).");
+    return;
   }
-  Serial.write(checksum);
 
-  //------------------Traitement des commandes série------------------
-
-  if (Serial.available() > 0) {
-    String cmd = Serial.readStringUntil('\n');
-    cmd.trim();
-
-    // Interroger une case (ex: "1,6") → affiche les coups possibles
-    if (cmd.length() == 3) {
-      int x = cmd.substring(0, 1).toInt();
-      int y = cmd.substring(2, 3).toInt();
-      if (plateau[x][y].getType() == AUCUN) {
-        Serial.println("Case vide.");
-      } else {
-        Serial.print("Selection: ");
-        calculerDeplacements(plateau[x][y]);
-      }
-    }
-
-    // Commande visuelle (?) → affiche le plateau en texte
-    if (cmd == "?") {
-      afficherPlateauSerial();
-    }
-
-    // Déplacer (ex: "1,6 1,4") → origine vers destination
-    else if (cmd.length() >= 7) {
-      int x1 = cmd.substring(0, 1).toInt();
-      int y1 = cmd.substring(2, 3).toInt();
-      int x2 = cmd.substring(4, 5).toInt();
-      int y2 = cmd.substring(6, 7).toInt();
-
-      if (plateau[x1][y1].getType() != AUCUN) {
-        plateau[x2][y2] = plateau[x1][y1];
-        plateau[x2][y2].setPosition(x2, y2);
-        plateau[x1][y1].vider();
-        Serial.println("Coup effectue.");
-      }
-    }
-
-    // Commande test (GO) → place un pion noir en 2,4
-    if (cmd == "GO") {
-      plateau[2][4].reset(PION, NOIR, 2, 4);
-    }
+  if (cmd == "?") {
+    afficherPlateauSerial();
+    return;
   }
+
+  // Commande "x,y" : sélectionner une pièce pour afficher ses coups en ROUGE.
+  // On n'affiche les coups que si c'est bien le tour de cette pièce (blanc ou noir).
+  if (cmd.length() == 3) {
+int x = cmd.substring(0, 1).toInt();
+    int y = cmd.substring(2, 3).toInt();
+    if (plateau[x][y].getType() == AUCUN) {
+      Serial.println("Case vide.");
+    } else if ((plateau[x][y].getCouleur() == BLANC) != tourBlanc) {
+      Serial.println("Pas a votre tour.");
+    } else {
+      selectionX = x;
+      selectionY = y;
+      Serial.println("Selection OK. Coups en ROUGE.");
+    }
+    return;
+  }
+
+  // Commande "x1,y1 x2,y2" : jouer le coup (origine -> destination).
+  if (cmd.length() >= 7) {
+    int x1 = cmd.substring(0, 1).toInt();
+    int y1 = cmd.substring(2, 3).toInt();
+    int x2 = cmd.substring(4, 5).toInt();
+    int y2 = cmd.substring(6, 7).toInt();
+    if (plateau[x1][y1].getType() == AUCUN) {
+      Serial.println("Case origine vide.");
+    } else if ((plateau[x1][y1].getCouleur() == BLANC) != tourBlanc) {
+      Serial.println("Pas a votre tour.");
+    } else {
+      appliquerCoup(x1, y1, x2, y2);
+      tourBlanc = !tourBlanc;
+      selectionX = -1;
+      selectionY = -1;
+      Serial.println(tourBlanc ? "Aux blancs." : "Aux noirs.");
+    }
+    return;
+  }
+
+  Serial.println("Commande inconnue. EP / ? / x,y / x1,y1 x2,y2");
 }
 
 //==============================================================
@@ -519,6 +521,63 @@ void afficherCoupsPossibles(int X[], int Y[], int nbCoups) {
 //==============================================================
 //  Affichage et débogage
 //==============================================================
+
+//------------------Affichage plateau en LEDs------------------
+
+void afficherPlateauLED() {
+  for (int y = 0; y < 8; y++) {
+    for (int x = 0; x < 8; x++) {
+      uint8_t idx = x + y * 8;
+      if (plateau[x][y].getType() == NOIR) {
+        setuLED(idx, strip.Color(255, 255, 0));
+      } else if (plateau[x][y].getCouleur() == BLANC) {
+        setuLED(idx, strip.Color(255, 255, 255));
+      } else {
+        setuLED(idx, strip.Color(0, 0, 0));
+      }
+    }
+  }
+}
+
+//------------------Position de test prise en passant------------------
+
+void initPositionEnPassant() {
+  for (int x = 0; x < 8; x++)
+    for (int y = 0; y < 8; y++)
+      plateau[x][y].vider();
+  plateau[4][1].reset(PION, BLANC, 4, 1);   // e2
+  plateau[3][3].reset(PION, NOIR, 3, 3);     // d4
+  clearEnPassantTarget();
+}
+
+//------------------Application d'un coup avec gestion en passant------------------
+
+void appliquerCoup(int x1, int y1, int x2, int y2) {
+  if (plateau[x1][y1].getType() == AUCUN) {
+    Serial.println("Case origine vide.");
+    return;
+  }
+  Piece &p = plateau[x1][y1];
+
+  if (p.getType() == PION && (y2 - y1 == 2 || y2 - y1 == -2)) {
+    setEnPassantTarget(x2, (y1 + y2) / 2);
+  } else {
+    clearEnPassantTarget();
+  }
+
+  bool priseEnPassant = (p.getType() == PION && x1 != x2 && plateau[x2][y2].getType() == AUCUN && enPassantCol == x2 && enPassantRow == y2);
+  if (priseEnPassant) {
+    int rowPionCapture = (p.getCouleur() == BLANC) ? y2 - 1 : y2 + 1;
+    plateau[x2][rowPionCapture].vider();
+  }
+
+  plateau[x2][y2] = plateau[x1][y1];
+  plateau[x2][y2].setPosition(x2, y2);
+  plateau[x1][y1].vider();
+  if (priseEnPassant) clearEnPassantTarget();
+
+  Serial.println("Coup effectue.");
+}
 
 //------------------Affichage plateau en texte (Serial)------------------
 
